@@ -24,7 +24,7 @@ module: ceph
 short_description: Ceph module for Ansible.
 description:
  - Use this module to run general Ceph commands.
-version_added: "1.8"
+version_added: "1.9"
 options:
   cmd:
     required: true

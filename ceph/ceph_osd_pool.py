@@ -24,7 +24,7 @@ module: ceph_osd_pool
 short_description: Ceph pools module for Ansible.
 description:
  - Use this module to manage Ceph pools
-version_added: "1.8"
+version_added: "1.9"
 options:
     name:
         required: true

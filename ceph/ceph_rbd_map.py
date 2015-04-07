@@ -24,7 +24,7 @@ module: ceph_rbd_map
 short_description: Ceph rbd map module for Ansible.
 description:
  - Use this module to manage Ceph rbd mappings.
-version_added: "1.8"
+version_added: "1.9"
 options:
     name:
         required: true

@@ -24,7 +24,7 @@ module: ceph_rbd
 short_description: Ceph rbd module for Ansible.
 description:
  - Use this module to manage Ceph rbds.
-version_added: "1.8"
+version_added: "1.9"
 options:
     name:
         required: true
