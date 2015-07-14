@@ -123,27 +123,24 @@ def main():
 
     rc, outbuf, outs = json_command(cluster_handle, target=target, argdict=valid_dict)
 
-    cmd = "ceph " + CMDS[cmd_param]
-
     endd = datetime.datetime.now()
-    delta = endd - startd
+
+    if rc:
+        module.fail_json(msg="Error: {0} {1}".format(rc, errno.errorcode[rc]))
+
     result = dict(
-        cmd      = cmd,
+        cmd      = "ceph " + CMDS[cmd_param],
         rc       = rc,
         start    = str(startd),
         end      = str(endd),
-        delta    = str(delta),
+        delta    = str(endd - startd),
         changed  = True
     )
 
-    if rc:
-        result["stderr"] = "Error: {0} {1}".format(rc, errno.errorcode[rc])
-    else:
-        if cmd_param == "status":
-            result["ceph_status"] = json.loads(outbuf)
-        elif cmd_param == "quorum_status":
-            result["quorum_status"] = json.loads(outbuf)
-
+    if cmd_param == "status":
+        result["ceph_status"] = json.loads(outbuf)
+    elif cmd_param == "quorum_status":
+        result["quorum_status"] = json.loads(outbuf)
     module.exit_json(**result)
 
 # import module snippets
