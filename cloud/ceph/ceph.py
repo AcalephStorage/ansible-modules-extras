@@ -23,17 +23,37 @@ DOCUMENTATION = '''
 module: ceph
 short_description: Ceph module for Ansible.
 description:
- - Use this module to run general Ceph commands.
+    - Use this module to run general Ceph commands.
 version_added: "1.9"
 options:
-  cmd:
-    required: true
-    choices: [ "status", "quorum_status" ]
-    description:
-     - A ceph command to be executed. If C(cmd=status), executes C(ceph status) and returns the JSON formatted
-       result in C(ceph_status). If C(cmd=quorum_status), executes C(ceph quorum_status) to show the monitor quorum,
-       including which monitors are participating and which one is the leader, and returns the JSON result in C(quorum_status).
-    required: true
+    cmd:
+        required: true
+        choices: [ "status", "quorum_status" ]
+        description:
+         - A ceph command to be executed. If C(cmd=status), executes C(ceph status) and returns the JSON formatted
+           result in C(ceph_status). If C(cmd=quorum_status), executes C(ceph quorum_status) to show the monitor quorum,
+           including which monitors are participating and which one is the leader, and returns the JSON result in C(quorum_status).
+        required: true
+    name:
+        required: false
+        default: "client.admin"
+        description:
+            - The client name for authentication
+    cluster:
+        required: false
+        default: "ceph"
+        description:
+            - The cluster name
+    conf:
+        required: false
+        default: ""
+        description:
+            - The Ceph configuration file to use
+    connect_timeout:
+        required: false
+        default: 5
+        description:
+            - The timeout value for connecting to the cluster
 requirements:
  - ceph
 author: Alistair Israel
@@ -41,7 +61,7 @@ author: Alistair Israel
 
 EXAMPLES = '''
 # Ceph status
-- ceph: status
+- ceph: cmd=status
 '''
 
 import os
@@ -49,30 +69,66 @@ import os
 import datetime
 import json
 
+import rados
+
+from ceph_argparse import \
+    concise_sig, descsort, parse_json_funcsigs, \
+    matchnum, validate_command, find_cmd_target, \
+    send_command, json_command
+
 CMDS = dict(
-    status='status --format=json',
-    quorum_status='quorum_status'
+    status="status --format=json",
+    quorum_status="quorum_status"
 )
 
+DICTS = dict(
+    status={"prefix": "status", "format": "json"},
+    quorum_status={"prefix": "quorum_status"}
+)
 
 def main():
     module = AnsibleModule(
-        argument_spec=dict(
-            cmd=dict(choices=['status', 'quorum_status'], required=True)
+        argument_spec = dict(
+            cmd =               dict(choices=["status", "quorum_status"], required=True),
+            name =              dict(default="client.admin"),
+            cluster =           dict(default="ceph"),
+            conf =              dict(default=""),
+            connect_timeout =   dict(type="int", default=5),
         ),
         supports_check_mode=False
     )
 
-    cmd_param = module.params['cmd']
-    cmd = 'ceph ' + CMDS[cmd_param]
+    cmd_param = module.params["cmd"]
+
+    name = module.params["name"]
+    clustername = module.params["cluster"]
+    conffile = module.params["conf"]
+    conf_defaults = {
+        "log_to_stderr": "true",
+        "err_to_stderr": "true",
+        "log_flush_on_exit" : "true",
+    }
+    default_timeout = module.params['connect_timeout']
+
     startd = datetime.datetime.now()
-    rc, out, err = module.run_command(cmd)
+
+    cluster_handle = rados.Rados(name=name, clustername=clustername,
+                                 conf_defaults=conf_defaults,
+                                 conffile=conffile)
+
+    cluster_handle.connect(timeout=default_timeout)
+
+    target = ("mon", "")
+    valid_dict = DICTS[cmd_param]
+
+    rc, outbuf, outs = json_command(cluster_handle, target=target, argdict=valid_dict)
+
+    cmd = "ceph " + CMDS[cmd_param]
+
     endd = datetime.datetime.now()
     delta = endd - startd
-
     result = dict(
         cmd      = cmd,
-        stderr   = err.rstrip("\r\n"),
         rc       = rc,
         start    = str(startd),
         end      = str(endd),
@@ -80,10 +136,13 @@ def main():
         changed  = True
     )
 
-    if cmd_param == 'status':
-        result['ceph_status'] = json.loads(out.rstrip("\r\n"))
-    elif cmd_param == 'quorum_status':
-        result['quorum_status'] = json.loads(out.rstrip("\r\n"))
+    if rc:
+        result["stderr"] = "Error: {0} {1}".format(rc, errno.errorcode[rc])
+    else:
+        if cmd_param == "status":
+            result["ceph_status"] = json.loads(outbuf)
+        elif cmd_param == "quorum_status":
+            result["quorum_status"] = json.loads(outbuf)
 
     module.exit_json(**result)
 
