@@ -34,7 +34,7 @@ options:
            result in C(ceph_status). If C(cmd=quorum_status), executes C(ceph quorum_status) to show the monitor quorum,
            including which monitors are participating and which one is the leader, and returns the JSON result in C(quorum_status).
         required: true
-    name:
+    client_name:
         required: false
         default: "client.admin"
         description:
@@ -71,10 +71,7 @@ import json
 
 import rados
 
-from ceph_argparse import \
-    concise_sig, descsort, parse_json_funcsigs, \
-    matchnum, validate_command, find_cmd_target, \
-    send_command, json_command
+from ceph_argparse import json_command
 
 CMDS = dict(
     status="status --format=json",
@@ -90,7 +87,7 @@ def main():
     module = AnsibleModule(
         argument_spec = dict(
             cmd =               dict(choices=["status", "quorum_status"], required=True),
-            name =              dict(default="client.admin"),
+            client_name =       dict(default="client.admin"),
             cluster =           dict(default="ceph"),
             conf =              dict(default=""),
             connect_timeout =   dict(type="int", default=5),
@@ -100,48 +97,52 @@ def main():
 
     cmd_param = module.params["cmd"]
 
-    name = module.params["name"]
-    clustername = module.params["cluster"]
+    client_name = module.params["client_name"]
+    cluster_name = module.params["cluster"]
     conffile = module.params["conf"]
-    conf_defaults = {
-        "log_to_stderr": "true",
-        "err_to_stderr": "true",
-        "log_flush_on_exit" : "true",
-    }
-    default_timeout = module.params['connect_timeout']
 
     startd = datetime.datetime.now()
 
-    cluster_handle = rados.Rados(name=name, clustername=clustername,
-                                 conf_defaults=conf_defaults,
-                                 conffile=conffile)
+    try:
+        cluster_handle = rados.Rados(name=client_name, clustername=cluster_name,
+                                     conffile=conffile)
+    except rados.Error as e:
+        module.fail_json(msg="Error initializing cluster client: {0}".format(repr(e)))
 
-    cluster_handle.connect(timeout=default_timeout)
+    try:
+        timeout = module.params['connect_timeout']
+        cluster_handle.connect(timeout=timeout)
+    except Exception as e:
+        module.fail_json(msg="Error connecting to cluster: {0}".format(e.__class__.__name__))
 
-    target = ("mon", "")
-    valid_dict = DICTS[cmd_param]
+    try:
+        target = ("mon", "")
+        valid_dict = DICTS[cmd_param]
 
-    rc, outbuf, outs = json_command(cluster_handle, target=target, argdict=valid_dict)
+        rc, outbuf, outs = json_command(cluster_handle, target=target, argdict=valid_dict)
 
-    endd = datetime.datetime.now()
+        endd = datetime.datetime.now()
 
-    if rc:
-        module.fail_json(msg="Error: {0} {1}".format(rc, errno.errorcode[rc]))
+        if rc:
+            module.fail_json(msg="Error: {0} {1}".format(rc, errno.errorcode[rc]))
 
-    result = dict(
-        cmd      = "ceph " + CMDS[cmd_param],
-        rc       = rc,
-        start    = str(startd),
-        end      = str(endd),
-        delta    = str(endd - startd),
-        changed  = True
-    )
+        result = dict(
+            cmd      = "ceph " + CMDS[cmd_param],
+            rc       = rc,
+            start    = str(startd),
+            end      = str(endd),
+            delta    = str(endd - startd),
+            changed  = True
+        )
 
-    if cmd_param == "status":
-        result["ceph_status"] = json.loads(outbuf)
-    elif cmd_param == "quorum_status":
-        result["quorum_status"] = json.loads(outbuf)
-    module.exit_json(**result)
+        if cmd_param == "status":
+            result["ceph_status"] = json.loads(outbuf)
+        elif cmd_param == "quorum_status":
+            result["quorum_status"] = json.loads(outbuf)
+        module.exit_json(**result)
+
+    finally:
+        cluster_handle.shutdown()
 
 # import module snippets
 from ansible.module_utils.basic import *
