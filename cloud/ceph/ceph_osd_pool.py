@@ -242,8 +242,6 @@ def main():
         pg_num = module.params['pgnum']
         if pg_num:
             current_pg_num = osd_pool_get("pg_num")
-            result['pgnum'] = pg_num
-            result['current_pg_num'] = current_pg_num
             if not int(pg_num) == int(current_pg_num):
                 if int(pg_num) > int(current_pg_num):
                     osd_pool_set("pg_num", int(pg_num))
