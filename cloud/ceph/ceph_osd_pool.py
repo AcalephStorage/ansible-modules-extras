@@ -101,6 +101,7 @@ EXAMPLES = '''
 
 import datetime
 import json
+import re
 
 import rados
 from ceph_argparse import json_command
@@ -128,10 +129,9 @@ def main():
     startd = datetime.datetime.now()
     result = dict(
         name = name,
-        start = str(startd)
+        start = str(startd),
+        changed = False
     )
-
-    changed = False
 
     client_name = module.params["client_name"]
     cluster_name = module.params["cluster"]
@@ -142,6 +142,144 @@ def main():
                                      conffile=conffile)
     except rados.Error as e:
         module.fail_json(msg="Error initializing cluster client: {0}".format(repr(e)))
+
+    def osd_pool_create():
+        pg_num = module.params['pgnum']
+        if not pg_num:
+            module.fail_json(msg='pgnum is required when state=present')
+        pgp_num = module.params['pgpnum']
+        pool_type = module.params['type']
+        ruleset = module.params['ruleset']
+        erasure_code_profile = module.params['erasure_code_profile']
+
+        args = {
+            'prefix': 'osd pool create',
+            'pool': name,
+            'pool_type': pool_type,
+            'pg_num': pg_num
+        }
+
+        if ruleset and not pgp_num:
+            module.fail_json(msg='pgpnum is required when ruleset specified')
+        if pool_type == 'erasure':
+            if not pgp_num:
+                module.fail_json(msg='pgpnum is required when type=erasure')
+            args['pgp_num'] = pgp_num
+            if erasure_code_profile:
+                args['erasure_code_profile'] = erasure_code_profile
+            if ruleset:
+                args['ruleset'] = ruleset
+        # pool_type = 'replicated'
+        else:
+            if ruleset:
+                args['erasure_code_profile'] = ruleset
+            if pgp_num:
+                args['pgp_num'] = pgp_num
+
+        target = ("mon", "")
+
+        rc, outbuf, outs = json_command(cluster_handle, target=target, argdict=args)
+
+        if rc:
+            module.fail_json(msg="Error: {0} {1}".format(rc, errno.errorcode[rc]))
+
+        expected_outs = "pool '{0}' created".format(name)
+        result['changed'] = expected_outs == outs
+        result['outbuf'] = outbuf
+        result['outs'] = outs
+
+
+    def osd_lspools():
+        target = ("mon", "")
+        args = {
+            'prefix': 'osd lspools',
+            'format': 'json'
+        }
+        rc, outbuf, outs = json_command(cluster_handle, target=target, argdict=args)
+        if rc:
+            module.fail_json(msg="Error: {0} {1}".format(rc, errno.errorcode[rc]))
+        return json.loads(outbuf)
+
+    def osd_pool_get(var):
+        target = ("mon", "")
+        args = {
+            'prefix': 'osd pool get',
+            'pool': name,
+            'var': var,
+            'format': 'json'
+        }
+        rc, outbuf, outs = json_command(cluster_handle, target=target, argdict=args)
+        if rc:
+            module.fail_json(msg="Error: {0} {1}".format(rc, errno.errorcode[rc]))
+        return json.loads(outbuf)[var]
+
+    def osd_pool_set(var, new_val):
+        for pool in osd_lspools():
+            if pool['poolname'] == name:
+                poolnum = pool['poolnum']
+
+                target = ("mon", "")
+                args = {
+                    'prefix': 'osd pool set',
+                    'pool': name,
+                    'var': var,
+                    'val': new_val
+                }
+                rc, outbuf, outs = json_command(cluster_handle, target=target, argdict=args)
+                if rc:
+                    module.fail_json(msg=outs)
+                # Can't use an exact match for whatever reason. The `outs` we get when
+                # run under Ansible is different from what we get using the `ceph` command
+                # or from running this code directly on the target host.
+                expected_outs = "set pool {0} {1} to \\d*".format(poolnum, var, new_val)
+                result['changed'] = True if re.match(expected_outs, outs) else False
+                result['outs'] = outs
+                break
+        else:
+            module.fail_json(msg="Error ENOENT: unrecognized pool '{0}'".format(name))
+
+    def osd_pool_modify():
+        pg_num = module.params['pgnum']
+        if pg_num:
+            current_pg_num = osd_pool_get("pg_num")
+            result['pgnum'] = pg_num
+            result['current_pg_num'] = current_pg_num
+            if not int(pg_num) == int(current_pg_num):
+                if int(pg_num) > int(current_pg_num):
+                    osd_pool_set("pg_num", int(pg_num))
+                else:
+                    module.fail_json(msg="specified pg_num {0} <= current {1}".format(pg_num, current_pg_num))
+
+        pgp_num = module.params['pgpnum']
+        if pgp_num:
+            current_pgp_num = osd_pool_get("pgp_num")
+            if not int(pgp_num) == int(current_pgp_num):
+                if int(pgp_num) > int(current_pgp_num):
+                    osd_pool_set("pgp_num", int(pgp_num))
+                else:
+                    module.fail_json(msg="specified pgp_num {0} <= current {1}".format(pgp_num, current_pgp_num))
+
+        pool_type = module.params['type']
+        ruleset = module.params['ruleset']
+        erasure_code_profile = module.params['erasure_code_profile']
+
+    def osd_pool_delete():
+        target = ("mon", "")
+        args = {
+            'prefix': 'osd pool delete',
+            'pool': name,
+            'pool2': name,
+            'sure': '--yes-i-really-really-mean-it'
+        }
+        rc, outbuf, outs = json_command(cluster_handle, target=target, argdict=args)
+
+        if rc:
+            module.fail_json(msg="Error: {0} {1}".format(rc, errno.errorcode[rc]))
+
+        expected_outs = "pool '{0}' removed".format(name)
+        result['changed'] = expected_outs == outs
+        result['outbuf'] = outbuf
+        result['outs'] = outs
 
     try:
         timeout = module.params['connect_timeout']
@@ -155,73 +293,16 @@ def main():
         state = module.params['state']
         if state == 'present':
             if name not in pools:
-                pg_num = module.params['pgnum']
-                if not pg_num:
-                    module.fail_json(msg='pgnum is required when state=present')
-                pgp_num = module.params['pgpnum']
-                pool_type = module.params['type']
-                ruleset = module.params['ruleset']
-                erasure_code_profile = module.params['erasure_code_profile']
-                # unused expected_num_objects
-
-                args = {
-                    'prefix': 'osd pool create',
-                    'pool': name,
-                    'pool_type': pool_type,
-                    'pg_num': pg_num
-                }
-
-                if ruleset and not pgp_num:
-                    module.fail_json(msg='pgpnum is required when ruleset specified')
-                if pool_type == 'erasure':
-                    if not pgp_num:
-                        module.fail_json(msg='pgpnum is required when type=erasure')
-                    args['pgp_num'] = pgp_num
-                    if erasure_code_profile:
-                        args['erasure_code_profile'] = erasure_code_profile
-                    if ruleset:
-                        args['ruleset'] = ruleset
-                # pool_type = 'replicated'
-                else:
-                    if ruleset:
-                        args['erasure_code_profile'] = ruleset
-                    if pgp_num:
-                        args['pgp_num'] = pgp_num
-
-                target = ("mon", "")
-
-                rc, outbuf, outs = json_command(cluster_handle, target=target, argdict=args)
-
-                if rc:
-                    module.fail_json(msg="Error: {0} {1}".format(rc, errno.errorcode[rc]))
-
-                expected_outs = "pool '{0}' created".format(name)
-                changed = expected_outs == outs
-                result['outbuf'] = outbuf
-                result['outs'] = outs
+                osd_pool_create()
+            else:
+                osd_pool_modify()
         else:
             if name in pools:
-                target = ("mon", "")
-                args = {
-                    'prefix': 'osd pool delete',
-                    'pool': name,
-                    'pool2': name,
-                    'sure': '--yes-i-really-really-mean-it'
-                }
-                rc, outbuf, outs = json_command(cluster_handle, target=target, argdict=args)
-
-                if rc:
-                    module.fail_json(msg="Error: {0} {1}".format(rc, errno.errorcode[rc]))
-
-                expected_outs = "pool '{0}' removed".format(name)
-                changed = expected_outs == outs
-                result['outbuf'] = outbuf
-                result['outs'] = outs
+                osd_pool_delete()
 
         endd = datetime.datetime.now()
         result['end'] = str(endd)
         result['delta'] = str(endd - startd)
-        result['changed'] = changed
         module.exit_json(**result)
 
     finally:
